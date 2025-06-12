@@ -1,0 +1,85 @@
+name: Build Kernel with SukiSU Patches
+
+on:
+  push:
+    branches:
+      - main
+      - sukisu-patched
+  pull_request:
+    branches:
+      - main
+      - sukisu-patched
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Check out the repository code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Install necessary build tools
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc git curl wget \
+            flex bison libssl-dev libelf-dev dwarves \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      # Apply SukiSU patch (nongki)
+      - name: Apply SukiSU patch (nongki)
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki || true
+        continue-on-error: true
+
+      # Check and fix Kconfig
+      - name: Check and fix Kconfig
+        run: |
+          # Debug: Check directory status
+          echo "Checking directory status..."
+          ls -ld drivers || echo "drivers directory does not exist"
+          ls -ld drivers/kernelsu || echo "drivers/kernelsu directory does not exist"
+          # Ensure drivers/kernelsu directory exists and is writable
+          mkdir -p drivers/kernelsu || true
+          chmod -R u+w drivers/kernelsu || true
+          # Create Kconfig file if it doesn't exist
+          if [ ! -f drivers/kernelsu/Kconfig ]; then
+            echo "Creating drivers/kernelsu/Kconfig"
+            cat << EOF > drivers/kernelsu/Kconfig
+config KERNELSU
+    bool "Enable KernelSU support"
+    default y
+EOF
+          fi
+          # Check content of Kconfig
+          echo "Content of drivers/kernelsu/Kconfig:"
+          cat drivers/kernelsu/Kconfig || echo "Kconfig file not created"
+          # Ensure drivers/Kconfig includes kernelsu/Kconfig
+          if ! grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig; then
+            echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          fi
+
+      # Apply susfs-dev patch
+      - name: Apply susfs-dev patch
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-dev || true
+        continue-on-error: true
+
+      # Build kernel with munch_defconfig
+      - name: Build kernel
+        run: |
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          # Add required KernelSU/SukiSU configurations
+          echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/munch_defconfig
+          echo "CONFIG_OVERLAY_FS=y" >> arch/arm64/configs/vendor/munch_defconfig
+          make vendor/munch_defconfig
+          make -j$(nproc)
+
+      # Upload kernel artifact
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image
+          path: arch/arm64/boot/Image.gz
